@@ -6,8 +6,9 @@ from tkinter import simpledialog
 from tkinter.messagebox import askyesno, showwarning
 from cryptography.fernet import Fernet
 from encryption import Encryptor
-from bcrypt import checkpw
+from bcrypt import checkpw,hashpw,gensalt
 import sqlite3
+import yaml
 
 
 def dict_factory(cur, row):
@@ -20,21 +21,78 @@ con = sqlite3.connect("encryptorDB.db")
 con.row_factory = dict_factory
 cursor = con.cursor()
 
+if not os.path.exists("config.yml"):
+    with open("config.yml","w") as f:
+        yaml.dump({"password":None},f)
 
-class App:
+with open("config.yml","r") as f:
+    config = yaml.safe_load(f)
 
-    def __init__(self, master):
+cursor.execute("CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, path TEXT, key TEXT, encrypted BOOLEAN)")
+
+class PasswordDialog(simpledialog.Dialog):
+    def __init__(self, parent, title = None):
+        self.password = None
+        self.result = None
+        super().__init__(parent, title)
+
+    def body(self, master):
+        self.password_label = tk.Label(master, text="Password")
+        self.password_entry = tk.Entry(master, show="*")
+        self.confirm_label = tk.Label(master, text="Confirm")
+        self.confirm_entry = tk.Entry(master, show="*")
+        self.password_label.grid(row=0,column=0,padx=(0,10))
+        self.password_entry.grid(row=0,column=1)
+        self.confirm_label.grid(row=1,column=0,padx=(0,10))
+        self.confirm_entry.grid(row=1,column=1)        
+    def apply(self):
+        hash_password = hashpw(self.password.encode(),gensalt())
+        with open("config.yml","w") as f:
+            config["password"] = hash_password
+            yaml.dump(config,f)
+        self.result = True
+    def validate(self):
+        if self.password_entry.get() == "" and self.confirm_entry.get() == "":
+            showwarning("Password Error", "Please enter a password")
+            self.password = None
+            self.password_entry.delete(0, tk.END)
+            self.confirm_entry.delete(0, tk.END)
+            return False
+           
+        elif self.password_entry.get() != self.confirm_entry.get():
+            showwarning("Password Error", "Passwords do not match")
+            self.password = None
+            self.password_entry.delete(0, tk.END)
+            self.confirm_entry.delete(0, tk.END)
+            return False
+        else:
+            self.password = self.password_entry.get()
+            return True
+        
+        
+class App(tk.Tk):
+
+    def __init__(self):
         # Root
+        super().__init__()
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        if config["password"] is None:
+            self.withdraw()
+            result = PasswordDialog(self,"Set Authenticate Password")
+            if not result.result:
+                self.destroy()
+                return
+            self.deiconify()
         self.selection = None
         self.file_info = None
-        self.master = master
-        self.master.geometry("800x500+320+80")
-        self.master.title("File encryptor")
-        self.master.iconbitmap(default="images/padlock.ico")
+        self.geometry("800x500+320+80")
+        self.title("File encryptor")       
         # Fonts
         arial13 = Font(family="Times", size=13)
         # Buttons frame
-        self.button_frame = tk.Frame(self.master)
+        self.button_frame = tk.Frame(self)
         # Add button
         self.add_button_image = tk.PhotoImage(file="images/buttonadd.png")
         self.add_button = tk.Button(self.button_frame, image=self.add_button_image, borderwidth=0,
@@ -48,10 +106,10 @@ class App:
 
         self.button_frame.pack(pady=(10, 20))
         # Scroll bar
-        self.scroll_bar = tk.Scrollbar(self.master)
+        self.scroll_bar = tk.Scrollbar(self)
         self.scroll_bar.pack(side=tk.RIGHT, fill=tk.Y)
         # Listbox
-        self.listBox = tk.Listbox(self.master, font=arial13)
+        self.listBox = tk.Listbox(self, font=arial13)
 
         data = cursor.execute("SELECT * FROM files").fetchall()
 
@@ -65,7 +123,7 @@ class App:
         self.listBox.configure(yscrollcommand=self.scroll_bar.set)
         self.scroll_bar.configure(command=self.listBox.yview)
         # File info frame
-        self.info = tk.Frame(self.master)
+        self.info = tk.Frame(self)
         # Decrypt button
         self.decrypt_button_image = tk.PhotoImage(file="images/decryptbutton.png")
         self.decrypt_button = tk.Button(self.info, image=self.decrypt_button_image, borderwidth=0,
@@ -85,11 +143,16 @@ class App:
         self.image_frame.grid(column=1, row=1, pady=(30, 0))
 
     def decrypt_file(self):
+        
+        if config["password"] is None:
+            showwarning("Authentication Error", "Not properly authenticated")
+            return
+            
         password = simpledialog.askstring(title="Authenticate", prompt="Please enter the password".center(100, " "),
-                                          show="*", parent=root)
+                                          show="*", parent=self)
         if password is not None:
 
-            if checkpw(password.encode(), cursor.execute("SELECT * FROM passwords").fetchone()["password"].encode()):
+            if checkpw(password.encode(), config["password"]):
                 encryptor = Encryptor(self.file_info["path"], self.file_info["key"])
                 encryptor.decrypt()
 
@@ -106,17 +169,18 @@ class App:
                     text="Status: Not Encrypted", fg="green")
                 self.image_frame.configure(image=self.image_unlock)
                 self.listBox.selection_set(selection)
+            else:
+                showwarning("Authentication Error", "Password is incorrect")
 
     def encrypt_file(self):
-        real_password_record = cursor.execute("SELECT * FROM passwords").fetchone()
-        if real_password_record is None:
-            showwarning("Password required", "Please save a password to database")
+        if config["password"] is None:
+            showwarning("Authentication Error", "Not properly authenticated")
             return
         password = simpledialog.askstring(title="Authenticate", prompt="Please enter the password".center(100, " "),
-                                          show="*", parent=root)
+                                          show="*", parent=self)
         if password is not None:
 
-            if checkpw(password.encode(), real_password_record["password"].encode()):
+            if checkpw(password.encode(), config["password"]):
                 encryptor = Encryptor(self.file_info["path"], self.file_info["key"])
                 encryptor.encrypt()
 
@@ -133,6 +197,8 @@ class App:
                         text="Status: Encrypted", fg="red")
                 self.image_frame.configure(image=self.image_lock)
                 self.listBox.selection_set(selection)
+            else:
+                showwarning("Authentication Error", "Password is incorrect")
 
     def file_action(self, event):
         if event.widget.size() != 0 and len(event.widget.curselection()) != 0:
@@ -155,12 +221,11 @@ class App:
 
     def remove_file(self):
         if self.listBox.size() != 0 and len(self.listBox.curselection()) != 0:
+            status = True
             if self.file_info["encrypted"]:
                 status = askyesno("Are you sure", "If you delete the file data it will be gone permanently")
-            else:
-                status = True
-            if status:
-
+                
+            if status:                    
                 cursor.execute("DELETE FROM files WHERE path=?", (self.file_info["path"],))
                 con.commit()
                 selection = self.listBox.curselection()
@@ -182,7 +247,6 @@ class App:
 
                 cursor.execute("INSERT INTO files(name,path,key,encrypted) VALUES (?,?,?,?)",
                                (file_name, opened_file, key, False))
-                cursor.execute("INSERT INTO backupfiles(name,path,key) VALUES (?,?,?)", (file_name, opened_file, key))
                 con.commit()
 
                 self.listBox.insert(tk.END, opened_file + " " + chr(128275))
@@ -190,10 +254,13 @@ class App:
                     self.listBox.selection_clear(self.listBox.curselection())
                 self.info.pack_forget()
 
+    def on_closing(self):
+        cursor.close()
+        con.close()
+        self.destroy()
+
 
 if __name__ == "__main__":
 
-    root = tk.Tk()
-    app = App(root)
-    root.mainloop()
-    con.close()
+    app = App()
+    app.mainloop()
